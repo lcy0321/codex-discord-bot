@@ -67,11 +67,11 @@ async def _run_turn(
             # closes the process if this attempt to interrupt it fails.
             pass
         raise
-    except RuntimeError:
+    except RuntimeError as error:
         # The SDK embeds server diagnostics in failed-turn RuntimeError.
         raise ConversationError(
             "Codex could not complete the reply. Check auth-status and retry."
-        ) from None
+        ) from error
 
 
 def _extract_text(*, result: openai_codex.TurnResult) -> str:
@@ -125,9 +125,9 @@ async def reply(
             result = await _run_turn(thread=thread, prompt=prompt)
     except TimeoutError:
         raise ConversationError("Codex reply timed out.") from None
-    except openai_codex.CodexError:
+    except openai_codex.CodexError as error:
         raise ConversationError(
             "Codex request failed. Check auth-status; the conversation was not reset."
-        ) from None
+        ) from error
 
     return Reply(thread_id=thread.id, text=_extract_text(result=result))

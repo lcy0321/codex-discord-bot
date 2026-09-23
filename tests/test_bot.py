@@ -229,7 +229,7 @@ def test_attachment_unavailable_is_explicit(permission: bool) -> None:
         TimeoutError("secret-canary"),
     ],
 )
-def test_errors_are_safe(
+def test_error_responses_do_not_expose_diagnostics(
     client: bot._Client, capsys: pytest.CaptureFixture[str], error: Exception
 ) -> None:
     interaction = _interaction()
@@ -237,9 +237,32 @@ def test_errors_are_safe(
         asyncio.run(client._commands._call(interaction))
     message = interaction.edit_original_response.call_args.kwargs["content"]
     assert "secret-canary" not in message
-    output = capsys.readouterr()
-    assert "secret-canary" not in output.out + output.err
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert records[0]["event"] == "command_failed"
+    assert records[0]["error_message"] == str(error)
     interaction.edit_original_response.assert_awaited_once()
+
+
+def test_command_failure_logs_sdk_cause(
+    client: bot._Client, capsys: pytest.CaptureFixture[str]
+) -> None:
+    try:
+        raise RuntimeError("model unavailable")
+    except RuntimeError as error:
+        failure = conversation.ConversationError("Codex could not complete the reply.")
+        failure.__cause__ = error
+
+    interaction = _interaction()
+    with mock.patch.object(conversation, "reply", side_effect=failure):
+        asyncio.run(client._commands._call(interaction))
+
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert records[0]["event"] == "command_failed"
+    assert records[0]["error"] == "ConversationError"
+    assert records[0]["cause"] == "RuntimeError"
+    assert records[0]["cause_message"] == "model unavailable"
+    message = interaction.edit_original_response.call_args.kwargs["content"]
+    assert "model unavailable" not in message
 
 
 def test_setup_syncs_commands(client: bot._Client) -> None:
@@ -378,7 +401,7 @@ def test_discord_failure_logs_identify_request_and_stage(
         asyncio.run(client._commands._call(interaction))
     assert reply.await_count == (0 if phase == "defer" else 1)
     output = capsys.readouterr().out
-    assert "secret-canary" not in output
+    assert "secret-canary" in output
     assert "private-response" not in output
     records = [json.loads(line) for line in output.splitlines()]
     if phase == "defer":

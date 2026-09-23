@@ -72,13 +72,19 @@ def _log_error(
     message_characters: int = 0,
     attachment_characters: int = 0,
 ) -> None:
-    """Log failure locations and protocol metadata without exception payloads."""
-    details: dict[str, object] = {"error": type(error).__name__}
+    """Log request context and the underlying failure for diagnosis."""
+    details: dict[str, object] = {
+        "error": type(error).__name__,
+        "error_message": str(error),
+    }
+    if error.__cause__ is not None:
+        details["cause"] = type(error.__cause__).__name__
+        details["cause_message"] = str(error.__cause__)
     if isinstance(error, discord.HTTPException):
         details.update(http_status=error.status, discord_code=error.code)
     if isinstance(error, OSError):
         details["errno"] = error.errno
-    # Traceback text and source lines can contain credentials or conversation data.
+    # Frame locations identify the failing path without duplicating exception text.
     details["frames"] = [
         f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
         for frame in traceback.extract_tb(error.__traceback__)

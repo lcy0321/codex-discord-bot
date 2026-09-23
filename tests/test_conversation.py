@@ -69,7 +69,8 @@ def test_auth_failure_never_starts_a_turn(
 
 
 def test_resume_failure_does_not_reset(client: mock.AsyncMock) -> None:
-    client.thread_resume.side_effect = openai_codex.CodexError("secret-canary")
+    error = openai_codex.CodexError("secret-canary")
+    client.thread_resume.side_effect = error
 
     with pytest.raises(conversation.ConversationError, match="not reset") as caught:
         asyncio.run(
@@ -81,7 +82,7 @@ def test_resume_failure_does_not_reset(client: mock.AsyncMock) -> None:
         )
 
     assert "secret-canary" not in str(caught.value)
-    assert caught.value.__suppress_context__
+    assert caught.value.__cause__ is error
     client.thread_start.assert_not_awaited()
     client.close.assert_awaited_once_with()
 
@@ -97,7 +98,7 @@ def test_turn_errors_are_safe(client: mock.AsyncMock, error: Exception) -> None:
         asyncio.run(conversation.reply(prompt="Hello", model="configured-model"))
 
     assert "secret-canary" not in str(caught.value)
-    assert caught.value.__suppress_context__
+    assert caught.value.__cause__ is error
     client.close.assert_awaited_once_with()
 
 
