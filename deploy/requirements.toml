@@ -1,0 +1,15 @@
+allowed_approval_policies = ["never"]
+allowed_sandbox_modes = ["read-only"]
+allow_managed_hooks_only = true
+
+[features]
+hooks = true
+
+# Read-only sandboxing alone does not prevent tool-based file reads.
+[[hooks.PreToolUse]]
+matcher = "*"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "echo 'Text-only service: tools are disabled' >&2; exit 2"
+timeout = 5

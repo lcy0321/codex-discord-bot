@@ -1,0 +1,7 @@
+**
+!pyproject.toml
+!uv.lock
+!codex_discord_bot/
+!codex_discord_bot/*.py
+!deploy/
+!deploy/*.toml

@@ -1,0 +1,23 @@
+name: codex-discord-bot
+
+services:
+  bot:
+    image: ghcr.io/lcy0321/codex-discord-bot:${IMAGE_TAG:-dev}
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_OWNER_ID: ${DISCORD_OWNER_ID:-}
+      CODEX_MODEL:
+    volumes:
+      - state:/state
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /work:uid=10001,gid=10001,mode=0700,size=16m
+
+volumes:
+  state:

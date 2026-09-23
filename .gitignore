@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.sample
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.pyrefly_cache/
+dist/
+*.egg-info/
+.state/
+.codex-home/
+.codex/
+sessions.toml
+sessions.toml.*
+auth.json

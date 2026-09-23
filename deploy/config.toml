@@ -1,0 +1,23 @@
+forced_login_method = "chatgpt"
+cli_auth_credentials_store = "file"
+approval_policy = "never"
+sandbox_mode = "read-only"
+web_search = "disabled"
+
+[features]
+shell_tool = false
+unified_exec = false
+shell_snapshot = false
+multi_agent = false
+goals = false
+memories = false
+apps = false
+remote_plugin = false
+view_image = false
+plugins = false
+image_generation = false
+browser_use = false
+computer_use = false
+
+[tools]
+view_image = false

@@ -1,0 +1,4 @@
+services:
+  bot:
+    build: .
+    image: codex-discord-bot:dev
