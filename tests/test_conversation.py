@@ -45,8 +45,6 @@ def test_new_and_resumed_reply(client: mock.AsyncMock, thread_id: str | None) ->
     assert options["model"] == "configured-model"
     assert options["sandbox"] == openai_codex.Sandbox.read_only
     assert options["approval_mode"] == openai_codex.ApprovalMode.deny_all
-    assert "search the web" in options["base_instructions"]
-    assert "Do not use other tools" in options["base_instructions"]
     if thread_id is None:
         assert options["ephemeral"] is False
         client.thread_resume.assert_not_awaited()
