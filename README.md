@@ -1,6 +1,6 @@
 # Personal Codex Discord Bot
 
-A single-user Discord User Install app for Codex chats via ChatGPT OAuth. The default model is `gpt-6-luna`; Codex tools are disabled.
+A single-user Discord User Install app for Codex chats via ChatGPT OAuth. It supports live web search and public pages; local tools remain disabled.
 
 ## Configure
 
@@ -32,16 +32,17 @@ After local changes, run `docker compose -f compose.yaml -f compose.dev.yaml up 
 
 Only `main` publishes SHA-tagged images to `ghcr.io/lcy0321/codex-discord-bot`. Keep `.env` on the server. GHCR packages start private; [authenticate](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry) before the first pull.
 
-Deploy a published revision:
+After CI publishes the `main` image, deploy it from the server's repository checkout:
 
 ```sh
-git checkout REVISION
+git fetch origin main
+git switch --detach origin/main
 export IMAGE_TAG="$(git rev-parse HEAD)"
 docker compose pull bot
 docker compose up -d --no-build
 ```
 
-On first deployment, run `docker compose run --rm bot check-config` and `docker compose run --rm bot login` before `up`. Repeat the block to update or roll back; export `IMAGE_TAG` again in each new shell.
+On first deployment, run `docker compose run --rm bot check-config` and `docker compose run --rm bot login` before `up`. To roll back, run `git switch --detach <previous-published-commit-sha>`, then repeat the `IMAGE_TAG`, `pull`, and `up` commands. Export `IMAGE_TAG` again in each new shell.
 
 ## Use
 

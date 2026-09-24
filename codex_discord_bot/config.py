@@ -13,4 +13,6 @@ class Settings(pydantic_settings.BaseSettings):
 
     discord_bot_token: Annotated[pydantic.SecretStr, pydantic.Field(min_length=1)]
     discord_owner_id: Annotated[pydantic.PositiveInt, pydantic.Field(lt=2**64)]
-    codex_model: Annotated[str, pydantic.StringConstraints(min_length=1)] = "gpt-6-luna"
+    codex_model: Annotated[str, pydantic.StringConstraints(min_length=1)] = (
+        "gpt-5.6-luna"
+    )

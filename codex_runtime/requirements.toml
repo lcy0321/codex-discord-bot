@@ -11,5 +11,5 @@ matcher = "*"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "echo 'Text-only service: tools are disabled' >&2; exit 2"
+command = "python3 /app/codex_runtime/tool_policy.py"
 timeout = 5

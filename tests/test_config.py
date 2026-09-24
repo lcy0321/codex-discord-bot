@@ -16,7 +16,7 @@ def _settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_defaults_and_secret_repr() -> None:
     settings = config.Settings()
     assert settings.discord_owner_id == 42
-    assert settings.codex_model == "gpt-6-luna"
+    assert settings.codex_model == "gpt-5.6-luna"
     assert isinstance(settings.discord_bot_token, pydantic.SecretStr)
     assert settings.discord_bot_token.get_secret_value() == "secret-value"
     assert "secret-value" not in repr(settings)

@@ -19,7 +19,7 @@ def prepare_runtime() -> openai_codex.CodexConfig:
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     home.chmod(mode=0o700)
 
-    template = Path(__file__).resolve().parent.parent / "deploy" / "config.toml"
+    template = Path(__file__).resolve().parent.parent / "codex_runtime" / "config.toml"
     with tempfile.NamedTemporaryFile(dir=home, delete=False) as output:
         temporary = Path(output.name)
         try:

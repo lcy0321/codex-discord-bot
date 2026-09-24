@@ -43,6 +43,8 @@ def test_new_and_resumed_reply(client: mock.AsyncMock, thread_id: str | None) ->
     assert options["model"] == "configured-model"
     assert options["sandbox"] == openai_codex.Sandbox.read_only
     assert options["approval_mode"] == openai_codex.ApprovalMode.deny_all
+    assert "search the web" in options["base_instructions"]
+    assert "Do not use other tools" in options["base_instructions"]
     if thread_id is None:
         assert options["ephemeral"] is False
         client.thread_resume.assert_not_awaited()
@@ -127,6 +129,25 @@ def test_tool_result_is_not_forwarded(client: mock.AsyncMock) -> None:
     ]
     with pytest.raises(conversation.ConversationError, match="non-text"):
         asyncio.run(conversation.reply(prompt="Hello", model="configured-model"))
+
+
+def test_web_search_result_keeps_text_reply(client: mock.AsyncMock) -> None:
+    client.thread_start.return_value.turn.return_value.run.return_value.items = [
+        mock.Mock(root=mock.Mock(type="webSearch")),
+        mock.Mock(root=mock.Mock(type="agentMessage")),
+    ]
+
+    result = asyncio.run(conversation.reply(prompt="Current news?", model="test-model"))
+
+    assert result.text == "Hello"
+
+
+def test_web_citation_marker_is_removed(client: mock.AsyncMock) -> None:
+    client.thread_start.return_value.turn.return_value.run.return_value.final_response = "Source: https://www.python.org/about/ \ue200cite\ue202turn0search1\ue201"
+
+    result = asyncio.run(conversation.reply(prompt="About Python?", model="test-model"))
+
+    assert result.text == "Source: https://www.python.org/about/"
 
 
 @pytest.mark.parametrize("stage", ["account", "thread_start", "turn", "run"])

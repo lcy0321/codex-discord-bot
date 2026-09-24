@@ -15,8 +15,9 @@ RUN groupadd --gid 10001 bot \
     && chmod 700 /state /state/codex
 
 COPY codex_discord_bot/ /app/codex_discord_bot/
-COPY deploy/config.toml /app/deploy/config.toml
-COPY deploy/requirements.toml /etc/codex/requirements.toml
+COPY codex_runtime/config.toml /app/codex_runtime/config.toml
+COPY codex_runtime/tool_policy.py /app/codex_runtime/tool_policy.py
+COPY codex_runtime/requirements.toml /etc/codex/requirements.toml
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
