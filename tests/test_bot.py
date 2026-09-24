@@ -56,8 +56,6 @@ def _interaction(*, command: str = "codex", owner: bool = True) -> mock.Mock:
 
     interaction.response.defer = mock.AsyncMock(side_effect=defer)
     interaction.edit_original_response = mock.AsyncMock()
-    interaction.app_permissions = discord.Permissions(attach_files=True)
-    interaction.filesize_limit = 10_000_000
     return interaction
 
 
@@ -121,7 +119,9 @@ def test_codex_uses_interaction_context(
     reply.assert_awaited_once_with(prompt="hello", model="test-model", thread_id=None)
     interaction.response.defer.assert_awaited_once_with(ephemeral=False, thinking=True)
     kwargs = interaction.edit_original_response.call_args.kwargs
-    assert kwargs["content"] == "@everyone hello"
+    assert kwargs["content"] is None
+    assert kwargs["embed"].description == "@everyone hello"
+    assert kwargs["embed"].footer.text == "Model: test-model"
     assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
     assert (
         asyncio.run(
@@ -131,6 +131,27 @@ def test_codex_uses_interaction_context(
         )
         == "saved"
     )
+
+
+def test_codex_shows_available_turn_duration(
+    client: bot._Client, capsys: pytest.CaptureFixture[str]
+) -> None:
+    interaction = _interaction()
+    with mock.patch.object(
+        conversation,
+        "reply",
+        return_value=conversation.Reply(
+            thread_id="saved",
+            text="Hello",
+            duration_ms=2500,
+        ),
+    ):
+        asyncio.run(client._commands._call(interaction))
+
+    embed = interaction.edit_original_response.call_args.kwargs["embed"]
+    assert embed.footer.text == "Model: test-model · Turn: 2.5 s"
+    record = json.loads(capsys.readouterr().out)
+    assert record["message_characters"] == len("Hello") + len(embed.footer.text)
 
 
 @pytest.mark.parametrize("command", ["codex", "new", "session"])
@@ -182,42 +203,41 @@ def test_query_and_reset_preserve_other_context(
     )
 
 
-@pytest.mark.parametrize("text", ["x" * 2001, "🙂" * 1001])
-def test_long_reply_attachment(text: str) -> None:
+@pytest.mark.parametrize("embedded", [False, True])
+@pytest.mark.parametrize("character", ["x", "🙂"])
+def test_long_reply_is_truncated(character: str, embedded: bool) -> None:
     interaction = _interaction()
-    received: list[bytes] = []
-
-    async def capture(**kwargs: object) -> None:
-        attachments = kwargs["attachments"]
-        assert isinstance(attachments, list)
-        attachment = attachments[0]
-        assert isinstance(attachment, discord.File)
-        received.append(attachment.fp.read())
-
-    interaction.edit_original_response.side_effect = capture
-    asyncio.run(bot._reply(interaction=interaction, text=text))
-    assert received == [text.encode("utf-8")]
-    assert (
-        len(
-            interaction.edit_original_response.call_args.kwargs["content"].encode(
-                "utf-16-le"
-            )
-        )
-        // 2
-        <= 2000
+    text = character * 5000
+    asyncio.run(
+        bot._edit_deferred_response(
+            interaction=interaction,
+            text=text,
+            embedded=embedded,
+        ),
     )
-    interaction.edit_original_response.assert_awaited_once()
 
-
-@pytest.mark.parametrize("permission", [False, True])
-def test_attachment_unavailable_is_explicit(permission: bool) -> None:
-    interaction = _interaction()
-    interaction.app_permissions = discord.Permissions(attach_files=permission)
-    interaction.filesize_limit = 10
-    asyncio.run(bot._reply(interaction=interaction, text="x" * 3000))
     kwargs = interaction.edit_original_response.call_args.kwargs
-    assert "truncated" in kwargs["content"]
-    assert kwargs["attachments"] == []
+    displayed = kwargs["embed"].description if embedded else kwargs["content"]
+    assert displayed.endswith("[Reply truncated. Ask for a shorter reply.]")
+    assert len(displayed.encode("utf-16-le")) // 2 <= (4096 if embedded else 2000)
+    assert "attachments" not in kwargs
+
+
+@pytest.mark.parametrize("text", ["x" * 4096, "🙂" * 2048])
+def test_embedded_reply_fits_description(text: str) -> None:
+    interaction = _interaction()
+
+    asyncio.run(
+        bot._edit_deferred_response(
+            interaction=interaction,
+            text=text,
+            embedded=True,
+        ),
+    )
+
+    kwargs = interaction.edit_original_response.call_args.kwargs
+    assert kwargs["content"] is None
+    assert kwargs["embed"].description == text
 
 
 @pytest.mark.parametrize(
@@ -452,15 +472,20 @@ def test_ready_uses_service_log_format(
 
 
 @pytest.mark.parametrize(
-    ("text", "attach"),
-    [("Hello🙂", True), ("x" * 2500, True), ("x" * 2500, False)],
+    ("text", "embedded"),
+    [("Hello🙂", False), ("x" * 2500, False), ("x" * 2500, True)],
 )
 def test_reply_log_sizes(
-    capsys: pytest.CaptureFixture[str], text: str, attach: bool
+    capsys: pytest.CaptureFixture[str], text: str, embedded: bool
 ) -> None:
     interaction = _interaction()
-    interaction.app_permissions = discord.Permissions(attach_files=attach)
-    asyncio.run(bot._reply(interaction=interaction, text=text))
+    asyncio.run(
+        bot._edit_deferred_response(
+            interaction=interaction,
+            text=text,
+            embedded=embedded,
+        ),
+    )
     record = json.loads(capsys.readouterr().out)
     assert record["event"] == "reply_sent"
     assert record["guild_id"] == 1
@@ -468,11 +493,9 @@ def test_reply_log_sizes(
     assert record["user_id"] == 42
     assert record["interaction_id"] == 12345
     assert record["reply_characters"] == len(text)
-    content = interaction.edit_original_response.call_args.kwargs["content"]
-    assert record["message_characters"] == len(content)
-    assert record["attachment_characters"] == (
-        len(text) if attach and len(text) > 2000 else 0
-    )
+    kwargs = interaction.edit_original_response.call_args.kwargs
+    displayed = kwargs["embed"].description if embedded else kwargs["content"]
+    assert record["message_characters"] == len(displayed)
 
 
 @pytest.mark.parametrize("failed", [False, True])
@@ -493,4 +516,3 @@ def test_denial_log_sizes(
     assert record["user_id"] == 99
     attempted = interaction.response.send_message.call_args.kwargs["content"]
     assert record["reply_characters"] == record["message_characters"] == len(attempted)
-    assert record["attachment_characters"] == 0

@@ -29,6 +29,7 @@ class ConversationError(Exception):
 class Reply:
     thread_id: str
     text: str
+    duration_ms: int | None = None
 
 
 @contextlib.asynccontextmanager
@@ -142,4 +143,8 @@ async def reply(
             "Codex request failed. Check auth-status; the conversation was not reset."
         ) from error
 
-    return Reply(thread_id=thread.id, text=_extract_text(result=result))
+    return Reply(
+        thread_id=thread.id,
+        text=_extract_text(result=result),
+        duration_ms=result.duration_ms,
+    )

@@ -77,7 +77,7 @@ class ChannelSessions:
 
     def __init__(self, *, mapping_path: Path, model: str) -> None:
         self._mapping_path = mapping_path
-        self._codex_model = model
+        self.model = model
         self._locks_by_context: dict[str, asyncio.Lock] = {}
         # Reject corrupt state before the first model request.
         self._thread_ids_by_context = self._read()
@@ -144,7 +144,7 @@ class ChannelSessions:
 
             result = await conversation.reply(
                 prompt=prompt,
-                model=self._codex_model,
+                model=self.model,
                 thread_id=thread_id,
             )
             if thread_id is None:

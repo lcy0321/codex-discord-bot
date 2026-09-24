@@ -52,7 +52,7 @@ On first deployment, run `docker compose run --rm bot check-config` and `docker 
 | `/session` | Show this channel's Codex thread ID. | Only you |
 | `/new` | Start a fresh conversation here on the next message. | Only you |
 
-Channels and threads have separate conversations. Long replies include a text attachment or are marked as truncated if attachments are unavailable. For private chats, use a channel only you can see; direct messages to the bot remain unverified.
+Channels and threads have separate conversations. For private chats, use a channel only you can see; direct messages to the bot remain unverified.
 
 ## Operate and recover
 

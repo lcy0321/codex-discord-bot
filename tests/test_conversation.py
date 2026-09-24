@@ -19,6 +19,8 @@ def client() -> Iterator[mock.AsyncMock]:
     result.status = openai_codex.types.TurnStatus.completed
     result.final_response = "Hello"
     result.items = [mock.Mock(root=mock.Mock(type="agentMessage"))]
+    result.usage = None
+    result.duration_ms = None
 
     with (
         mock.patch.object(auth, "prepare_runtime"),
@@ -52,6 +54,15 @@ def test_new_and_resumed_reply(client: mock.AsyncMock, thread_id: str | None) ->
         assert options["thread_id"] == thread_id
         client.thread_start.assert_not_awaited()
     client.close.assert_awaited_once_with()
+
+
+def test_reply_includes_available_turn_duration(client: mock.AsyncMock) -> None:
+    result = client.thread_start.return_value.turn.return_value.run.return_value
+    result.duration_ms = 2500
+
+    reply = asyncio.run(conversation.reply(prompt="Hello", model="test-model"))
+
+    assert reply.duration_ms == 2500
 
 
 @pytest.mark.parametrize("kind", [None, "apiKey"])

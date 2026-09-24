@@ -1,6 +1,4 @@
 import asyncio
-import contextlib
-import io
 import json
 import os
 import signal
@@ -12,9 +10,6 @@ import discord
 from discord import app_commands
 
 from codex_discord_bot import auth, config, conversation, sessions
-
-# 800 code points use at most 1,600 UTF-16 units, leaving room for the notice.
-_PREVIEW_CHARACTERS = 800
 
 
 def _log_event(*, event: str, level: str = "INFO", **fields: object) -> None:
@@ -40,7 +35,6 @@ def _log_interaction(
     level: str = "INFO",
     reply_characters: int = 0,
     message_characters: int = 0,
-    attachment_characters: int = 0,
     **fields: object,
 ) -> None:
     _log_event(
@@ -58,7 +52,6 @@ def _log_interaction(
         expired=interaction.is_expired(),
         reply_characters=reply_characters,
         message_characters=message_characters,
-        attachment_characters=attachment_characters,
         **fields,
     )
 
@@ -70,7 +63,6 @@ def _log_error(
     error: Exception,
     reply_characters: int = 0,
     message_characters: int = 0,
-    attachment_characters: int = 0,
 ) -> None:
     """Log request context and the underlying failure for diagnosis."""
     details: dict[str, object] = {
@@ -95,7 +87,6 @@ def _log_error(
         level="ERROR",
         reply_characters=reply_characters,
         message_characters=message_characters,
-        attachment_characters=attachment_characters,
         **details,
     )
 
@@ -127,13 +118,14 @@ def _error_message(error: Exception) -> str:
         return "Request failed. Check /session and the service logs before retrying."
 
 
-async def _send_reply(
+async def _send_immediate_response(
     *,
     interaction: discord.Interaction,
     text: str,
     ephemeral: bool,
     event: str,
 ) -> None:
+    """Respond before the interaction has been deferred."""
     try:
         await interaction.response.send_message(
             content=text,
@@ -157,26 +149,46 @@ async def _send_reply(
     )
 
 
-async def _update_deferred_response(
+def _fit_reply(*, text: str, limit: int) -> str:
+    """Fit Discord's UTF-16 character limit and mark truncated replies."""
+    if len(text.encode("utf-16-le")) // 2 <= limit:
+        return text
+
+    notice = "\n\n[Reply truncated. Ask for a shorter reply.]"
+    budget = limit - len(notice)
+    used = 0
+    for index, character in enumerate(text):
+        width = 2 if ord(character) > 0xFFFF else 1
+        if used + width > budget:
+            return text[:index] + notice
+        used += width
+    return text
+
+
+async def _edit_deferred_response(
     *,
     interaction: discord.Interaction,
     text: str,
-    content: str,
-    event: str,
-    attachment: discord.File | None = None,
+    event: str = "reply",
+    embedded: bool = False,
+    footer: str | None = None,
 ) -> None:
-    """Update the deferred Discord response with prepared content and an optional file.
-
-    `text` is the full reply for character counts; `content` is the displayed body.
-    Record delivery success or failure, propagating HTTP errors to the caller.
-    """
+    """Replace a deferred response and log its delivery."""
+    limit = 4096 if embedded else 2000
+    displayed_text = _fit_reply(text=text, limit=limit)
+    embed = (
+        discord.Embed(description=displayed_text, color=discord.Color.blurple())
+        if embedded
+        else None
+    )
+    if embed is not None and footer:
+        embed.set_footer(text=footer)
     reply_characters = len(text)
-    message_characters = len(content)
-    attachment_characters = len(text) if attachment is not None else 0
+    message_characters = len(displayed_text) + len(footer or "")
     try:
         await interaction.edit_original_response(
-            content=content,
-            attachments=[attachment] if attachment is not None else [],
+            content=None if embedded else displayed_text,
+            embed=embed,
             allowed_mentions=discord.AllowedMentions.none(),
         )
     except discord.HTTPException as error:
@@ -186,7 +198,6 @@ async def _update_deferred_response(
             error=error,
             reply_characters=reply_characters,
             message_characters=message_characters,
-            attachment_characters=attachment_characters,
         )
         raise
     _log_interaction(
@@ -194,55 +205,7 @@ async def _update_deferred_response(
         interaction=interaction,
         reply_characters=reply_characters,
         message_characters=message_characters,
-        attachment_characters=attachment_characters,
     )
-
-
-async def _reply(
-    *,
-    interaction: discord.Interaction,
-    text: str,
-    event: str = "reply",
-) -> None:
-    """Edit the deferred response; long output uses one UTF-8 attachment."""
-    # Budget conservatively for Discord's 2,000-character cap:
-    # UTF-16 counts astral emoji twice, whereas Python len() counts them once.
-    if len(text.encode("utf-16-le")) // 2 <= 2000:
-        await _update_deferred_response(
-            interaction=interaction,
-            text=text,
-            content=text,
-            event=event,
-        )
-        return
-
-    data = text.encode("utf-8")
-    preview = text[:_PREVIEW_CHARACTERS]
-    if (
-        not interaction.app_permissions.attach_files
-        or len(data) > interaction.filesize_limit
-    ):
-        content = (
-            preview
-            + "\n\n[Reply truncated: attachment unavailable. Ask for a shorter reply.]"
-        )
-        await _update_deferred_response(
-            interaction=interaction, text=text, content=content, event=event
-        )
-        return
-
-    # File needs a readable, seekable stream; BytesIO avoids writing private text to disk.
-    with (
-        io.BytesIO(data) as buffer,
-        contextlib.closing(discord.File(fp=buffer, filename="reply.txt")) as attachment,
-    ):
-        await _update_deferred_response(
-            interaction=interaction,
-            text=text,
-            content=preview + "\n\n[Full reply attached.]",
-            event=event,
-            attachment=attachment,
-        )
 
 
 class _Commands(app_commands.CommandTree[discord.Client]):
@@ -320,7 +283,7 @@ class _Commands(app_commands.CommandTree[discord.Client]):
     async def _codex(self, interaction: discord.Interaction, prompt: str) -> None:
         if not prompt.strip():
             # Visibility is fixed by the first response, including defer.
-            await _send_reply(
+            await _send_immediate_response(
                 interaction=interaction,
                 text="Enter a non-empty message.",
                 ephemeral=True,
@@ -332,13 +295,21 @@ class _Commands(app_commands.CommandTree[discord.Client]):
         # Include queue time so a busy channel cannot exhaust the 15-minute token.
         async with asyncio.timeout(delay=600):
             reply = await self._sessions.reply(context=context, prompt=prompt)
-        await _reply(interaction=interaction, text=reply.text)
+        footer = f"Model: {self._sessions.model}"
+        if reply.duration_ms is not None:
+            footer += f" · Turn: {reply.duration_ms / 1000:.1f} s"
+        await _edit_deferred_response(
+            interaction=interaction,
+            text=reply.text,
+            embedded=True,
+            footer=footer,
+        )
 
     async def _new(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         async with asyncio.timeout(delay=600):
             await self._sessions.reset(context=_context(interaction=interaction))
-        await _reply(
+        await _edit_deferred_response(
             interaction=interaction,
             text="New conversation on the next message. Other channels are unchanged.",
         )
@@ -349,7 +320,10 @@ class _Commands(app_commands.CommandTree[discord.Client]):
             thread_id = await self._sessions.current(
                 context=_context(interaction=interaction)
             )
-        await _reply(interaction=interaction, text=thread_id or "No session yet.")
+        await _edit_deferred_response(
+            interaction=interaction,
+            text=thread_id or "No session yet.",
+        )
 
     @typing.override
     async def on_error(
@@ -367,11 +341,11 @@ class _Commands(app_commands.CommandTree[discord.Client]):
         message = _error_message(cause)
         try:
             if interaction.response.is_done():
-                await _reply(
+                await _edit_deferred_response(
                     interaction=interaction, text=message, event="error_response"
                 )
             else:
-                await _send_reply(
+                await _send_immediate_response(
                     interaction=interaction,
                     text=message,
                     ephemeral=interaction.command is None
