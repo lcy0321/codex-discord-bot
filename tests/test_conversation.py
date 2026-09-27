@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from collections.abc import Iterator
 from unittest import mock
 
@@ -61,6 +62,24 @@ def test_reply_includes_available_turn_duration(client: mock.AsyncMock) -> None:
     reply = asyncio.run(conversation.reply(prompt="Hello", model="test-model"))
 
     assert reply.duration_ms == 2500
+
+
+def test_image_turn_uses_data_url(client: mock.AsyncMock) -> None:
+    image = conversation.Image(media_type="image/png", data=b"image bytes")
+
+    asyncio.run(
+        conversation.reply(
+            prompt="Describe the image",
+            model="test-model",
+            image=image,
+        )
+    )
+
+    turn_input = client.thread_start.return_value.turn.call_args.kwargs["input"]
+    assert turn_input[0] == openai_codex.TextInput(text="Describe the image")
+    assert turn_input[1] == openai_codex.ImageInput(
+        url="data:image/png;base64," + base64.b64encode(image.data).decode("ascii")
+    )
 
 
 @pytest.mark.parametrize("kind", [None, "apiKey"])

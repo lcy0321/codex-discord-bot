@@ -77,7 +77,10 @@ def test_isolation_reset_and_restart(tmp_path: Path) -> None:
             ) as reply:
                 await resumed.reply(context=context, prompt="recall")
             reply.assert_awaited_once_with(
-                prompt="recall", model="test-model", thread_id=f"thread-{index}"
+                prompt="recall",
+                model="test-model",
+                thread_id=f"thread-{index}",
+                image=None,
             )
 
     asyncio.run(exercise())
@@ -115,7 +118,11 @@ def test_concurrent_contexts_and_reset(tmp_path: Path) -> None:
         calls: list[str | None] = []
 
         async def reply(
-            *, prompt: str, model: str, thread_id: str | None
+            *,
+            prompt: str,
+            model: str,
+            thread_id: str | None,
+            image: conversation.Image | None,
         ) -> conversation.Reply:
             calls.append(thread_id)
             if prompt == "slow":
@@ -162,7 +169,10 @@ def test_failed_turn_preserves_mapping(
             with pytest.raises(type(error)):
                 await manager.reply(context=context, prompt="test")
             reply.assert_awaited_once_with(
-                prompt="test", model="test", thread_id="old" if existing else None
+                prompt="test",
+                model="test",
+                thread_id="old" if existing else None,
+                image=None,
             )
         # Cancellation must release the context lock, including for reset.
         assert await manager.current(context=context) == ("old" if existing else None)

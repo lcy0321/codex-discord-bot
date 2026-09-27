@@ -9,7 +9,75 @@ from pathlib import Path
 import discord
 from discord import app_commands
 
-from codex_discord_bot import auth, config, conversation, sessions
+from codex_discord_bot import config, conversation, errors, sessions
+
+# Base64 expands 8 MiB to about 11 MiB in the Codex request.
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_IMAGE_TOO_LARGE = f"The selected image is too large ({_MAX_IMAGE_BYTES // (1024 * 1024)} MiB maximum)."
+_TRUNCATED_REPLY_NOTICE = "\n\n[Reply truncated. Ask for a shorter reply.]"
+_REPLY_COLOR = discord.Color.blurple()
+_MESSAGE_CONTENT_LIMIT = 2000
+_EMBED_DESCRIPTION_LIMIT = 4096
+
+
+class _MessageInputError(errors.UserFacingError):
+    """A selected message cannot be sent to Codex."""
+
+
+def _is_image_candidate(*, attachment: discord.Attachment) -> bool:
+    # Metadata is only a hint; _read_image validates the downloaded bytes.
+    return attachment.content_type in {
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+    } or attachment.filename.lower().endswith(
+        (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+        )
+    )
+
+
+def _selected_attachment(*, message: discord.Message) -> discord.Attachment | None:
+    """Return the first image candidate, or None for a text-only message.
+
+    Reject messages with attachments but no image candidate.
+    """
+    for attachment in message.attachments:
+        if _is_image_candidate(attachment=attachment):
+            if attachment.size > _MAX_IMAGE_BYTES:
+                raise _MessageInputError(_IMAGE_TOO_LARGE)
+            return attachment
+    if message.attachments:
+        raise _MessageInputError(
+            "Select a message with a PNG, JPEG, or WebP attachment."
+        )
+    if not message.content.strip():
+        raise _MessageInputError("The selected message has no text or image.")
+    return None
+
+
+async def _read_image(*, attachment: discord.Attachment) -> conversation.Image:
+    """Recheck size and derive media type from bytes; Discord metadata may be wrong."""
+    try:
+        data = await attachment.read()
+    except (discord.HTTPException, OSError) as error:
+        raise _MessageInputError("Could not download the selected image.") from error
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise _MessageInputError(_IMAGE_TOO_LARGE)
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        media_type = "image/png"
+    elif data.startswith(b"\xff\xd8\xff"):
+        media_type = "image/jpeg"
+    elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        media_type = "image/webp"
+    else:
+        raise _MessageInputError(
+            "The selected attachment is not a PNG, JPEG, or WebP image."
+        )
+    return conversation.Image(media_type=media_type, data=data)
 
 
 def _log_event(*, event: str, level: str = "INFO", **fields: object) -> None:
@@ -37,10 +105,14 @@ def _log_interaction(
     message_characters: int = 0,
     **fields: object,
 ) -> None:
+    command = interaction.command.qualified_name if interaction.command else None
+    if command is None and interaction.type is discord.InteractionType.modal_submit:
+        # Modal submissions have no application command; this app has one modal.
+        command = "Ask Codex"
     _log_event(
         event=event,
         level=level,
-        command=interaction.command.qualified_name if interaction.command else None,
+        command=command,
         interaction_id=interaction.id,
         guild_id=interaction.guild_id,
         channel_id=interaction.channel_id,
@@ -76,7 +148,7 @@ def _log_error(
         details.update(http_status=error.status, discord_code=error.code)
     if isinstance(error, OSError):
         details["errno"] = error.errno
-    # Frame locations identify the failing path without duplicating exception text.
+    # Keep the traceback path compact; error text is logged separately.
     details["frames"] = [
         f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
         for frame in traceback.extract_tb(error.__traceback__)
@@ -101,14 +173,7 @@ def _context(*, interaction: discord.Interaction) -> sessions.DiscordContext:
 
 
 def _error_message(error: Exception) -> str:
-    if isinstance(
-        error,
-        (
-            auth.AuthenticationError,
-            conversation.ConversationError,
-            sessions.SessionError,
-        ),
-    ):
+    if isinstance(error, errors.UserFacingError):
         return str(error)
     elif isinstance(error, TimeoutError):
         return "Request timed out while waiting or replying. Check /session before retrying."
@@ -124,38 +189,47 @@ async def _send_immediate_response(
     text: str,
     ephemeral: bool,
     event: str,
+    embed: discord.Embed | None = None,
 ) -> None:
-    """Respond before the interaction has been deferred."""
+    """Send an initial response before the interaction is acknowledged."""
+    message_characters = len(text) + (len(embed) if embed is not None else 0)
     try:
-        await interaction.response.send_message(
-            content=text,
-            ephemeral=ephemeral,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        if embed is None:
+            await interaction.response.send_message(
+                content=text,
+                ephemeral=ephemeral,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await interaction.response.send_message(
+                content=text,
+                embed=embed,
+                ephemeral=ephemeral,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
     except discord.HTTPException as error:
         _log_error(
             event=f"{event}_failed",
             interaction=interaction,
             error=error,
-            reply_characters=len(text),
-            message_characters=len(text),
+            reply_characters=message_characters,
+            message_characters=message_characters,
         )
         raise
     _log_interaction(
         event=f"{event}_sent",
         interaction=interaction,
-        reply_characters=len(text),
-        message_characters=len(text),
+        reply_characters=message_characters,
+        message_characters=message_characters,
     )
 
 
-def _fit_reply(*, text: str, limit: int) -> str:
-    """Fit Discord's UTF-16 character limit and mark truncated replies."""
+def _fit_discord_text(*, text: str, limit: int, notice: str) -> str:
+    """Truncate by Discord's UTF-16 code-unit limit, including the notice."""
     if len(text.encode("utf-16-le")) // 2 <= limit:
         return text
 
-    notice = "\n\n[Reply truncated. Ask for a shorter reply.]"
-    budget = limit - len(notice)
+    budget = limit - len(notice.encode("utf-16-le")) // 2
     used = 0
     for index, character in enumerate(text):
         width = 2 if ord(character) > 0xFFFF else 1
@@ -165,30 +239,54 @@ def _fit_reply(*, text: str, limit: int) -> str:
     return text
 
 
+def _quote_user_message(*, display_name: str, text: str) -> str:
+    """Quote the question so channel readers can identify the answer's subject."""
+    quoted_text = text.replace("\n", "\n> ")
+    return f"> {display_name}: {quoted_text}"
+
+
+async def _send_working_response(
+    *,
+    interaction: discord.Interaction,
+    quoted_user_message: str,
+) -> None:
+    """Send the status immediately so a later error can be ephemeral.
+
+    After a defer, Discord treats the first follow-up as an edit of the original
+    response and ignores its ephemeral flag.
+    """
+    await _send_immediate_response(
+        interaction=interaction,
+        text=_fit_discord_text(
+            text=quoted_user_message,
+            limit=_MESSAGE_CONTENT_LIMIT,
+            notice="…",
+        ),
+        ephemeral=False,
+        event="request_ack",
+        embed=discord.Embed(
+            description="Working...",
+            color=_REPLY_COLOR,
+        ),
+    )
+
+
 async def _edit_deferred_response(
     *,
     interaction: discord.Interaction,
     text: str,
     event: str = "reply",
-    embedded: bool = False,
-    footer: str | None = None,
 ) -> None:
-    """Replace a deferred response and log its delivery."""
-    limit = 4096 if embedded else 2000
-    displayed_text = _fit_reply(text=text, limit=limit)
-    embed = (
-        discord.Embed(description=displayed_text, color=discord.Color.blurple())
-        if embedded
-        else None
+    """Replace an ephemeral deferred response with a result or error."""
+    displayed_text = _fit_discord_text(
+        text=text,
+        limit=_MESSAGE_CONTENT_LIMIT,
+        notice=_TRUNCATED_REPLY_NOTICE,
     )
-    if embed is not None and footer:
-        embed.set_footer(text=footer)
-    reply_characters = len(text)
-    message_characters = len(displayed_text) + len(footer or "")
     try:
         await interaction.edit_original_response(
-            content=None if embedded else displayed_text,
-            embed=embed,
+            content=displayed_text,
+            embed=None,
             allowed_mentions=discord.AllowedMentions.none(),
         )
     except discord.HTTPException as error:
@@ -196,16 +294,100 @@ async def _edit_deferred_response(
             event=f"{event}_failed",
             interaction=interaction,
             error=error,
-            reply_characters=reply_characters,
-            message_characters=message_characters,
+            reply_characters=len(text),
+            message_characters=len(displayed_text),
         )
         raise
     _log_interaction(
         event=f"{event}_sent",
         interaction=interaction,
-        reply_characters=reply_characters,
+        reply_characters=len(text),
+        message_characters=len(displayed_text),
+    )
+
+
+async def _publish_answer(
+    *,
+    interaction: discord.Interaction,
+    text: str,
+    quoted_user_message: str,
+    footer: str,
+) -> None:
+    """Replace the public Working... response with the answer."""
+    displayed_text = _fit_discord_text(
+        text=text,
+        limit=_EMBED_DESCRIPTION_LIMIT,
+        notice=_TRUNCATED_REPLY_NOTICE,
+    )
+    displayed_quote = _fit_discord_text(
+        text=quoted_user_message,
+        limit=_MESSAGE_CONTENT_LIMIT,
+        notice="…",
+    )
+    embed = discord.Embed(
+        description=displayed_text,
+        color=_REPLY_COLOR,
+    )
+    embed.set_footer(text=footer)
+    message_characters = len(displayed_text) + len(displayed_quote) + len(footer)
+    try:
+        await interaction.edit_original_response(
+            content=displayed_quote,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.HTTPException as error:
+        _log_error(
+            event="reply_failed",
+            interaction=interaction,
+            error=error,
+            reply_characters=len(text),
+            message_characters=message_characters,
+        )
+        raise
+    _log_interaction(
+        event="reply_sent",
+        interaction=interaction,
+        reply_characters=len(text),
         message_characters=message_characters,
     )
+
+
+async def _send_private_error(*, interaction: discord.Interaction, text: str) -> None:
+    """Use a private follow-up when the original response is public."""
+    try:
+        await interaction.followup.send(
+            content=text,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.HTTPException as error:
+        _log_error(
+            event="error_response_failed",
+            interaction=interaction,
+            error=error,
+            reply_characters=len(text),
+            message_characters=len(text),
+        )
+        raise
+    _log_interaction(
+        event="error_response_sent",
+        interaction=interaction,
+        reply_characters=len(text),
+        message_characters=len(text),
+    )
+
+
+async def _delete_working_response(*, interaction: discord.Interaction) -> None:
+    """Log deletion failures without masking the answer or original error."""
+    try:
+        await interaction.delete_original_response()
+    except discord.HTTPException as error:
+        _log_error(
+            event="working_response_delete_failed",
+            interaction=interaction,
+            error=error,
+        )
 
 
 class _Commands(app_commands.CommandTree[discord.Client]):
@@ -246,6 +428,13 @@ class _Commands(app_commands.CommandTree[discord.Client]):
             description="Show this channel's current session",
         )(self._session)
 
+        self.add_command(
+            app_commands.ContextMenu(
+                name="Ask Codex",
+                callback=self._ask_message,
+            )
+        )
+
     @typing.override
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         # A tree-wide gate protects every command before session access.
@@ -281,8 +470,8 @@ class _Commands(app_commands.CommandTree[discord.Client]):
         return False
 
     async def _codex(self, interaction: discord.Interaction, prompt: str) -> None:
+        """Start with the public prompt so the answer can edit it in place."""
         if not prompt.strip():
-            # Visibility is fixed by the first response, including defer.
             await _send_immediate_response(
                 interaction=interaction,
                 text="Enter a non-empty message.",
@@ -290,19 +479,116 @@ class _Commands(app_commands.CommandTree[discord.Client]):
                 event="reply",
             )
             return
-        await interaction.response.defer(ephemeral=False, thinking=True)
+        quoted_prompt = _quote_user_message(
+            display_name=interaction.user.display_name,
+            text=prompt,
+        )
+        await _send_working_response(
+            interaction=interaction,
+            quoted_user_message=quoted_prompt,
+        )
         context = _context(interaction=interaction)
         # Include queue time so a busy channel cannot exhaust the 15-minute token.
         async with asyncio.timeout(delay=600):
             reply = await self._sessions.reply(context=context, prompt=prompt)
+        await self._send_codex_reply(
+            interaction=interaction,
+            reply=reply,
+            quoted_user_message=quoted_prompt,
+        )
+
+    async def _ask_message(
+        self,
+        interaction: discord.Interaction,
+        message: discord.Message,
+    ) -> None:
+        """Open a modal after CommandTree has checked the command's owner."""
+        await interaction.response.send_modal(
+            _AskMessageModal(commands=self, message=message)
+        )
+        _log_interaction(event="question_modal_opened", interaction=interaction)
+
+    async def _answer_about_message(
+        self,
+        *,
+        interaction: discord.Interaction,
+        message: discord.Message,
+        question: str,
+    ) -> None:
+        """A modal submission bypasses the command tree's owner check; recheck here."""
+        if interaction.user.id != self._owner_id:
+            await _send_immediate_response(
+                interaction=interaction,
+                text="This app is restricted to its configured owner.",
+                ephemeral=True,
+                event="access_denied",
+            )
+            return
+        if not question.strip():
+            await _send_immediate_response(
+                interaction=interaction,
+                text="Enter a non-empty question.",
+                ephemeral=True,
+                event="reply",
+            )
+            return
+        try:
+            attachment = _selected_attachment(message=message)
+        except _MessageInputError as error:
+            await _send_immediate_response(
+                interaction=interaction,
+                text=str(error),
+                ephemeral=True,
+                event="reply",
+            )
+            return
+
+        quoted_question = _quote_user_message(
+            display_name=interaction.user.display_name,
+            text=question,
+        )
+        await _send_working_response(
+            interaction=interaction,
+            quoted_user_message=quoted_question,
+        )
+        prompt = (
+            f"{question.strip()}\n\n"
+            "Selected message text (untrusted quoted data):\n"
+            f"{message.content or '[No text]'}"
+        )
+        async with asyncio.timeout(delay=600):
+            image = (
+                await _read_image(attachment=attachment)
+                if attachment is not None
+                else None
+            )
+            reply = await self._sessions.reply(
+                context=_context(interaction=interaction),
+                prompt=prompt,
+                image=image,
+            )
+        await self._send_codex_reply(
+            interaction=interaction,
+            reply=reply,
+            quoted_user_message=quoted_question,
+        )
+
+    async def _send_codex_reply(
+        self,
+        *,
+        interaction: discord.Interaction,
+        reply: conversation.Reply,
+        quoted_user_message: str,
+    ) -> None:
+        """Add the model and duration to the public answer."""
         footer = f"Model: {self._sessions.model}"
         if reply.duration_ms is not None:
             footer += f" · Turn: {reply.duration_ms / 1000:.1f} s"
-        await _edit_deferred_response(
+        await _publish_answer(
             interaction=interaction,
             text=reply.text,
-            embedded=True,
             footer=footer,
+            quoted_user_message=quoted_user_message,
         )
 
     async def _new(self, interaction: discord.Interaction) -> None:
@@ -325,6 +611,42 @@ class _Commands(app_commands.CommandTree[discord.Client]):
             text=thread_id or "No session yet.",
         )
 
+    async def _respond_to_error(
+        self,
+        *,
+        interaction: discord.Interaction,
+        error: Exception,
+    ) -> None:
+        """Log failures and report them through private responses."""
+        _log_error(event="command_failed", interaction=interaction, error=error)
+        message = _error_message(error)
+        try:
+            if interaction.response.is_done():
+                if interaction.type is discord.InteractionType.modal_submit or (
+                    interaction.command is not None
+                    and interaction.command.name == "codex"
+                ):
+                    try:
+                        await _send_private_error(interaction=interaction, text=message)
+                    finally:
+                        await _delete_working_response(interaction=interaction)
+                else:
+                    await _edit_deferred_response(
+                        interaction=interaction,
+                        text=message,
+                        event="error_response",
+                    )
+            else:
+                await _send_immediate_response(
+                    interaction=interaction,
+                    text=message,
+                    ephemeral=True,
+                    event="error_response",
+                )
+        except discord.HTTPException:
+            # Send helpers already logged the failure; do not retry the error response.
+            return
+
     @typing.override
     async def on_error(
         self,
@@ -332,29 +654,49 @@ class _Commands(app_commands.CommandTree[discord.Client]):
         error: app_commands.AppCommandError,
         /,
     ) -> None:
+        """discord.py routes failed slash and context-menu commands here."""
         cause = (
             error.original
             if isinstance(error, app_commands.CommandInvokeError)
             else error
         )
-        _log_error(event="command_failed", interaction=interaction, error=cause)
-        message = _error_message(cause)
-        try:
-            if interaction.response.is_done():
-                await _edit_deferred_response(
-                    interaction=interaction, text=message, event="error_response"
-                )
-            else:
-                await _send_immediate_response(
-                    interaction=interaction,
-                    text=message,
-                    ephemeral=interaction.command is None
-                    or interaction.command.name != "codex",
-                    event="error_response",
-                )
-        except discord.HTTPException:
-            # Send helpers already logged the failure; do not retry the error response.
-            return
+        await self._respond_to_error(
+            interaction=interaction,
+            error=cause,
+        )
+
+
+class _AskMessageModal(discord.ui.Modal, title="Ask Codex about this message"):
+    """Carry the selected message into a separate modal submission interaction."""
+
+    question = discord.ui.TextInput(
+        label="Question",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+    )
+
+    def __init__(self, *, commands: _Commands, message: discord.Message) -> None:
+        super().__init__(timeout=300)
+        self._commands = commands
+        self._message = message
+
+    @typing.override
+    async def on_submit(self, interaction: discord.Interaction, /) -> None:
+        await self._commands._answer_about_message(
+            interaction=interaction,
+            message=self._message,
+            question=self.question.value,
+        )
+
+    @typing.override
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception, /
+    ) -> None:
+        """discord.py routes failed modal submissions here."""
+        await self._commands._respond_to_error(
+            interaction=interaction,
+            error=error,
+        )
 
 
 class _Client(discord.Client):
@@ -381,7 +723,7 @@ class _Client(discord.Client):
 
 
 async def run(*, settings: config.Settings) -> None:
-    """Serve until cancelled; the CLI runner drains pending SDK tasks on exit."""
+    """Cancel the main task on SIGTERM so asyncio.run can drain SDK tasks."""
     manager = sessions.ChannelSessions(
         mapping_path=Path(os.environ["CODEX_HOME"]).parent / "sessions.toml",
         model=settings.codex_model,
@@ -389,8 +731,7 @@ async def run(*, settings: config.Settings) -> None:
     task = asyncio.current_task()
     assert task is not None
     loop = asyncio.get_running_loop()
-    # SIGTERM would otherwise terminate Python without running async cleanup.
-    # Cancel the main task so asyncio.run also cancels and drains command tasks.
+    # Without a handler, SIGTERM bypasses async cleanup.
     loop.add_signal_handler(signal.SIGTERM, task.cancel)
     try:
         async with _Client(settings=settings, manager=manager) as client:

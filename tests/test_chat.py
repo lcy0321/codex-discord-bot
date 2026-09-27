@@ -35,9 +35,11 @@ def test_chat_continues_and_resets(capsys: pytest.CaptureFixture[str]) -> None:
         )
 
     assert reply.await_args_list == [
-        mock.call(prompt="first", model="configured-model", thread_id=None),
-        mock.call(prompt="second", model="configured-model", thread_id="one"),
-        mock.call(prompt="third", model="configured-model", thread_id=None),
+        mock.call(prompt="first", model="configured-model", thread_id=None, image=None),
+        mock.call(
+            prompt="second", model="configured-model", thread_id="one", image=None
+        ),
+        mock.call(prompt="third", model="configured-model", thread_id=None, image=None),
     ]
     output = capsys.readouterr().out
     assert "First reply" in output
@@ -77,7 +79,7 @@ def test_error_preserves_conversation(
 
     assert reply.await_count == 3
     assert reply.await_args == mock.call(
-        prompt="retry", model="configured-model", thread_id="one"
+        prompt="retry", model="configured-model", thread_id="one", image=None
     )
     assert str(error) in capsys.readouterr().err
 
@@ -165,7 +167,10 @@ def test_chat_recovers_saved_context(capsys: pytest.CaptureFixture[str]) -> None
         __main__._chat(model="configured-model", context=context)
 
     reply.assert_awaited_once_with(
-        prompt="recall", model="configured-model", thread_id="saved"
+        prompt="recall",
+        model="configured-model",
+        thread_id="saved",
+        image=None,
     )
     output = capsys.readouterr().out
     assert "saved" in output

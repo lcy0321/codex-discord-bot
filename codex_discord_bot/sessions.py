@@ -15,11 +15,11 @@ from typing import Annotated
 
 import pydantic
 
-from codex_discord_bot import conversation
+from codex_discord_bot import conversation, errors
 
 
-class SessionError(Exception):
-    """Safe to display without exposing stored state."""
+class SessionError(errors.UserFacingError):
+    """A Discord context or saved conversation mapping cannot be used."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -137,6 +137,7 @@ class ChannelSessions:
         *,
         context: DiscordContext,
         prompt: str,
+        image: conversation.Image | None = None,
     ) -> conversation.Reply:
         """Save new thread IDs after success; a crash before saving can orphan history."""
         async with self._context_lock(context=context):
@@ -146,6 +147,7 @@ class ChannelSessions:
                 prompt=prompt,
                 model=self.model,
                 thread_id=thread_id,
+                image=image,
             )
             if thread_id is None:
                 # Empty SDK threads cannot resume. Publish only after a completed reply.

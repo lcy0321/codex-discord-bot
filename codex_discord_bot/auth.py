@@ -5,9 +5,11 @@ from pathlib import Path
 
 import openai_codex.types
 
+from codex_discord_bot import errors
 
-class AuthenticationError(Exception):
-    """Safe to display without exposing runtime diagnostics."""
+
+class AuthenticationError(errors.UserFacingError):
+    """ChatGPT authentication is missing or invalid."""
 
 
 def prepare_runtime() -> openai_codex.CodexConfig:

@@ -49,10 +49,73 @@ On first deployment, run `docker compose run --rm bot check-config` and `docker 
 | Command | Result | Visibility |
 | --- | --- | --- |
 | `/codex prompt:…` | Continue the conversation in this channel or thread. | Normal channel reply |
-| `/session` | Show this channel's Codex thread ID. | Only you |
-| `/new` | Start a fresh conversation here on the next message. | Only you |
+| Message menu → **Apps → Ask Codex** | Ask about the selected message's text or image. | Normal channel reply |
+| `/session` | Show this channel's Codex thread ID. | Ephemeral |
+| `/new` | Start a fresh conversation here on the next message. | Ephemeral |
 
 Channels and threads have separate conversations. For private chats, use a channel only you can see; direct messages to the bot remain unverified.
+
+### Response flow
+
+`/codex` edits its `Working...` message into the answer:
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Discord
+    participant Bot
+    User->>Discord: Submit /codex prompt
+    Discord->>Bot: Slash-command interaction
+    Bot-->>Discord: Quoted prompt + Working...
+    alt Success
+        Bot-->>Discord: Edit original message: answer
+        Discord-->>User: Answer in channel
+    else Failure
+        Bot-->>Discord: Follow-up: error (ephemeral)
+        Bot-->>Discord: Delete Working... message
+    end
+```
+
+`Ask Codex` opens a modal. Its submission starts a new interaction whose `Working...` message becomes the answer:
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Discord
+    participant Bot
+    User->>Discord: Select message → Ask Codex
+    Discord->>Bot: Context-menu interaction
+    Bot-->>Discord: Open question modal
+    Discord-->>User: Show modal
+    User->>Discord: Submit question
+    Discord->>Bot: Modal interaction
+    Bot-->>Discord: Quoted question + Working...
+    alt Success
+        Bot-->>Discord: Edit original message: answer
+        Discord-->>User: Answer in channel
+    else Failure
+        Bot-->>Discord: Follow-up: error (ephemeral)
+        Bot-->>Discord: Delete Working... message
+    end
+```
+
+Both paths send an initial message rather than defer: Discord would turn the first ephemeral error follow-up after a defer into an edit without changing visibility. Input rejected before the `Working...` message gets an ephemeral initial response.
+
+`/new` and `/session` use ephemeral responses:
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Discord
+    participant Bot
+    User->>Discord: /new or /session
+    Discord->>Bot: Command interaction
+    Bot-->>Discord: Defer (ephemeral)
+    Discord-->>User: Loading (ephemeral)
+    Bot->>Bot: Reset or look up session
+    Bot-->>Discord: Edit original message: result or error
+    Discord-->>User: Result or error (ephemeral)
+```
 
 ## Operate and recover
 

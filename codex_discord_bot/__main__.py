@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pydantic
 
-from codex_discord_bot import auth, bot, config, conversation, sessions
+from codex_discord_bot import auth, bot, config, errors, sessions
 
 
 def _chat(*, model: str, context: sessions.DiscordContext) -> None:
@@ -41,11 +41,7 @@ def _chat(*, model: str, context: sessions.DiscordContext) -> None:
                     reply = runner.run(manager.reply(context=context, prompt=prompt))
                     print(reply.text, flush=True)
             # Expected failures leave the saved context available for another message.
-            except (
-                auth.AuthenticationError,
-                conversation.ConversationError,
-                sessions.SessionError,
-            ) as error:
+            except errors.UserFacingError as error:
                 print(f"Error: {error}", file=sys.stderr)
 
 
@@ -92,7 +88,7 @@ def _main() -> int:
     except pydantic.ValidationError as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
-    except (sessions.SessionError, auth.AuthenticationError) as error:
+    except errors.UserFacingError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     except asyncio.CancelledError:
