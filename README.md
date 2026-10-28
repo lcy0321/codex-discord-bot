@@ -46,80 +46,24 @@ On first deployment, run `docker compose run --rm bot check-config` and `docker 
 
 ## Use
 
-| Command | Result | Visibility |
-| --- | --- | --- |
-| `/codex prompt:…` | Continue the conversation in this channel or thread. | Normal channel reply |
-| Message menu → **Apps → Ask Codex** | Ask about the selected message's text or image. | Normal channel reply |
-| `/session` | Show this channel's Codex thread ID. | Ephemeral |
-| `/new` | Start a fresh conversation here on the next message. | Ephemeral |
+Responses start private. Channels and threads have separate conversations.
 
-Channels and threads have separate conversations. For private chats, use a channel only you can see; direct messages to the bot remain unverified.
+| Command | Result |
+| --- | --- |
+| `/codex prompt:…` | Continue the conversation in this channel or thread. |
+| Message menu → **Apps → Ask Codex** | Ask about the selected message's text or image. |
+| `/session` | Show this channel's Codex thread ID. |
+| `/new` | Start a fresh conversation here on the next message. |
 
-### Response flow
+Click **Publish** to share a response in the current channel or thread and remove its private copy. Each response can be published once, without another model call.
 
-`/codex` edits its `Working...` message into the answer:
-
-```mermaid
-sequenceDiagram
-    actor User
-    participant Discord
-    participant Bot
-    User->>Discord: Submit /codex prompt
-    Discord->>Bot: Slash-command interaction
-    Bot-->>Discord: Quoted prompt + Working...
-    alt Success
-        Bot-->>Discord: Edit original message: answer
-        Discord-->>User: Answer in channel
-    else Failure
-        Bot-->>Discord: Follow-up: error (ephemeral)
-        Bot-->>Discord: Delete Working... message
-    end
-```
-
-`Ask Codex` opens a modal. Its submission starts a new interaction whose `Working...` message becomes the answer:
-
-```mermaid
-sequenceDiagram
-    actor User
-    participant Discord
-    participant Bot
-    User->>Discord: Select message → Ask Codex
-    Discord->>Bot: Context-menu interaction
-    Bot-->>Discord: Open question modal
-    Discord-->>User: Show modal
-    User->>Discord: Submit question
-    Discord->>Bot: Modal interaction
-    Bot-->>Discord: Quoted question + Working...
-    alt Success
-        Bot-->>Discord: Edit original message: answer
-        Discord-->>User: Answer in channel
-    else Failure
-        Bot-->>Discord: Follow-up: error (ephemeral)
-        Bot-->>Discord: Delete Working... message
-    end
-```
-
-Both paths send an initial message rather than defer: Discord would turn the first ephemeral error follow-up after a defer into an edit without changing visibility. Input rejected before the `Working...` message gets an ephemeral initial response.
-
-`/new` and `/session` use ephemeral responses:
-
-```mermaid
-sequenceDiagram
-    actor User
-    participant Discord
-    participant Bot
-    User->>Discord: /new or /session
-    Discord->>Bot: Command interaction
-    Bot-->>Discord: Defer (ephemeral)
-    Discord-->>User: Loading (ephemeral)
-    Bot->>Bot: Reset or look up session
-    Bot-->>Discord: Edit original message: result or error
-    Discord-->>User: Result or error (ephemeral)
-```
+The button shows its UTC expiry and stops working after a service restart. If delivery is unconfirmed, check the channel before retrying; the button will not resend.
 
 ## Operate and recover
 
 Use `docker compose logs -f bot` for logs and `docker compose restart bot` to restart. Keep one bot instance running; `docker compose run bot` starts another.
+
+Commands register on startup; normal shutdown tries to remove them before disconnecting.
 
 The `codex-discord-bot_state` volume stores OAuth credentials and conversation state. Restarts, updates, and `docker compose down` retain it; `docker compose down -v` deletes it. If authentication fails, stop the bot before refreshing:
 
